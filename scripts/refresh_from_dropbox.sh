@@ -4,10 +4,10 @@
 # then regenerates ALL dashboard components and deploys to GitHub Pages.
 #
 # Expected files in Dropbox:/Moltbot/Economic-Dashboard/:
-#   Output-Mapped-SA2-Level-Data-Pivot-All-LGAs.xlsx   (required)
-#   Output-Indicator-Lookup.xlsx                        (required)
-#   Output-Trends.csv                                   (required)
-#   Output-Mapped-SA2-Level-Data-Pivot-All-LGAs-Prior-Month.xlsx  (optional)
+#   Output - Mapped SA2 Level Data (Pivot) - All LGAs.xlsx
+#   Output  - Indicator Lookup.xlsx
+#   Output - Trends.csv
+#   Output  - Time-series Trends.xlsx
 #
 # Components refreshed:
 #   1. Sync input files from Dropbox
@@ -16,10 +16,10 @@
 #   4. clusters.json                  (Analytics panel - k-means)
 #   5. outliers.json                  (Analytics panel - Mahalanobis)
 #   6. trend_series.json              (sparklines)
-#   7. central-coast.md               (Intelligence Report - LLM regenerated)
-#   8. central-coast.docx             (Word download)
-#   9. index.html cache-bust + QA system prompt date
-#  10. Validate + commit + push
+#   7. central-coast.md               (source-backed Intelligence Report)
+#   8. central-coast.docx/pdf         (downloads from same Markdown)
+#   9. index.html cache-bust
+#  10. Validate + commit + push dev/gh-pages only
 #
 # Usage:
 #   bash scripts/refresh_from_dropbox.sh
@@ -40,45 +40,33 @@ echo " Dashboard Full Refresh from Dropbox"
 echo " $(date -u '+%Y-%m-%d %H:%M UTC')"
 echo "========================================="
 
-# ── 1. Sync from Dropbox ──────────────────────────────────────────────
+# ── 1. Fetch exactly four current sources into a temporary directory ──
 echo ""
-echo ">> Step 1: Syncing from $DROPBOX_PATH ..."
-# Sync all xlsx/csv from Dropbox, then rename to canonical hyphenated names
-rclone copy "$DROPBOX_PATH" "$INPUTS_DIR" \
-  --include "*.xlsx" \
-  --include "*.csv" \
-  --progress
-
-# Normalize Dropbox filenames (spaces/dashes vary) to canonical names expected by scripts
-for SRC in \
-  "Output  - Indicator Lookup.xlsx" \
-  "Output - Indicator Lookup.xlsx"; do
-  [[ -f "$INPUTS_DIR/$SRC" ]] && mv -f "$INPUTS_DIR/$SRC" "$INPUTS_DIR/Output-Indicator-Lookup.xlsx" && echo "   Renamed: $SRC" || true
-done
-for SRC in \
-  "Output - Mapped SA2 Level Data (Pivot) - All LGAs.xlsx" \
-  "Output - Mapped SA2 Level Data (Pivot) - All LGAs - Prior Month.xlsx"; do
-  if [[ -f "$INPUTS_DIR/$SRC" ]]; then
-    if [[ "$SRC" == *"Prior Month"* ]]; then
-      mv -f "$INPUTS_DIR/$SRC" "$INPUTS_DIR/Output-Mapped-SA2-Level-Data-Pivot-All-LGAs-Prior-Month.xlsx" && echo "   Renamed: $SRC"
-    else
-      mv -f "$INPUTS_DIR/$SRC" "$INPUTS_DIR/Output-Mapped-SA2-Level-Data-Pivot-All-LGAs.xlsx" && echo "   Renamed: $SRC"
-    fi
-  fi
-done
-
-echo "   Files in inputs/:"
-ls -lh "$INPUTS_DIR"/*.xlsx "$INPUTS_DIR"/*.csv 2>/dev/null | awk '{print "   ", $5, $NF}'
+echo ">> Step 1: Fetching four files from $DROPBOX_PATH ..."
+DOWNLOAD_DIR=$(mktemp -d)
+trap 'rm -rf "$DOWNLOAD_DIR"' EXIT
+rclone copy "$DROPBOX_PATH" "$DOWNLOAD_DIR" \
+  --include "Output - Mapped SA2 Level Data (Pivot) - All LGAs.xlsx" \
+  --include "Output  - Indicator Lookup.xlsx" \
+  --include "Output  - Time-series Trends.xlsx" \
+  --include "Output - Trends.csv"
 
 for f in \
-  "$INPUTS_DIR/Output-Mapped-SA2-Level-Data-Pivot-All-LGAs.xlsx" \
-  "$INPUTS_DIR/Output-Indicator-Lookup.xlsx" \
-  "$INPUTS_DIR/Output-Trends.csv"; do
-  if [[ ! -f "$f" ]]; then
-    echo "ERROR: Required file missing: $f"
+  "Output - Mapped SA2 Level Data (Pivot) - All LGAs.xlsx" \
+  "Output  - Indicator Lookup.xlsx" \
+  "Output  - Time-series Trends.xlsx" \
+  "Output - Trends.csv"; do
+  if [[ ! -s "$DOWNLOAD_DIR/$f" ]]; then
+    echo "ERROR: Required Dropbox source missing or empty: $f" >&2
     exit 1
   fi
 done
+# Install only canonical tracked inputs; do not touch any pre-existing raw or
+# prior-month file in inputs/ (the latter cannot be inferred from these files).
+cp "$DOWNLOAD_DIR/Output - Mapped SA2 Level Data (Pivot) - All LGAs.xlsx" "$INPUTS_DIR/Output-Mapped-SA2-Level-Data-Pivot-All-LGAs.xlsx"
+cp "$DOWNLOAD_DIR/Output  - Indicator Lookup.xlsx" "$INPUTS_DIR/Output-Indicator-Lookup.xlsx"
+cp "$DOWNLOAD_DIR/Output  - Time-series Trends.xlsx" "$INPUTS_DIR/Output  - Time-series Trends.xlsx"
+cp "$DOWNLOAD_DIR/Output - Trends.csv" "$INPUTS_DIR/Output-Trends.csv"
 
 # ── 2. Regenerate data.js + indicator-lookup.js ───────────────────────
 echo ""
@@ -95,62 +83,43 @@ echo ">> Step 3b: Recomputing outliers (Analytics panel) ..."
 python3 scripts/compute_outliers.py
 
 echo ">> Step 3c: Recomputing clusters (Analytics panel) ..."
-if [[ -f "$REPO_DIR/scripts/compute_clusters.py" ]]; then
-  python3 scripts/compute_clusters.py
-else
-  echo "   (compute_clusters.py not found, skipping)"
-fi
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python3 scripts/compute_clusters.py
 
 echo "   Analytics JSON files updated."
 
-# ── 4. Regenerate Intelligence Report (LLM) ──────────────────────────
+# ── 4. Regenerate auditable Intelligence Report ───────────────────────
 echo ""
-echo ">> Step 4: Regenerating Intelligence Report via LLM ..."
-if python3 scripts/generate_intelligence_report.py; then
-  echo "   central-coast.md regenerated."
-else
-  echo "   WARN: Intelligence Report generation failed. Keeping existing file."
-fi
+echo ">> Step 4: Regenerating data-backed Intelligence Report ..."
+python3 scripts/generate_verified_report.py
+echo "   central-coast.md regenerated with auditable source periods and rankings."
 
 # ── 5. Regenerate Word download ───────────────────────────────────────
 echo ""
 echo ">> Step 5: Regenerating Word download ..."
 if command -v pandoc &>/dev/null; then
-  for MD in "$REPO_DIR"/reports/*.md; do
-    BASE="$(basename "$MD" .md)"
-    DOCX="$REPO_DIR/reports/${BASE}.docx"
-    pandoc "$MD" --from markdown --to docx --standalone --output "$DOCX" 2>/dev/null \
-      && echo "   Generated: reports/${BASE}.docx" \
-      || echo "   WARN: docx generation failed for $BASE.md"
-  done
+  pandoc "$REPO_DIR/reports/central-coast.md" --from markdown --to docx --standalone --output "$REPO_DIR/reports/central-coast.docx"
+  echo "   Generated: reports/central-coast.docx"
 else
-  echo "   WARN: pandoc not found, skipping Word generation"
+  echo "ERROR: pandoc is required for the report Word download" >&2
+  exit 1
 fi
+if ! command -v wkhtmltopdf &>/dev/null; then
+  echo "ERROR: wkhtmltopdf is required for the tracked PDF" >&2
+  exit 1
+fi
+pandoc "$REPO_DIR/reports/central-coast.md" -s -t html5 -M title='Central Coast SA2 Intelligence Report' -o /tmp/sa2-dashboard-report.html
+wkhtmltopdf -q /tmp/sa2-dashboard-report.html "$REPO_DIR/reports/central-coast.pdf"
 
-# ── 6. Update cache-buster + QA system prompt date in index.html ─────
+# ── 6. Update cache-buster in index.html ──────────────────────────────
 echo ""
-echo ">> Step 6: Updating cache-buster and QA prompt date in index.html ..."
+echo ">> Step 6: Updating cache-buster in index.html ..."
 TS=$(date +%s)
 sed -i "s/indicator-lookup\.js?v=[0-9]*/indicator-lookup.js?v=${TS}/g" "$REPO_DIR/index.html"
 sed -i "s/data\.js?v=[0-9]*/data.js?v=${TS}/g" "$REPO_DIR/index.html"
 
-# Update the "indicators as at <Month YYYY>" date in the QA system prompt
-PERIOD_LABEL=$(python3 -c "
-import re, json
-from datetime import datetime
-src = open('indicator-lookup.js').read()
-periods = re.findall(r'\"latestPeriod\"\s*:\s*\"([^\"]+)\"', src)
-monthly = sorted(set(p for p in periods if len(p) >= 7), reverse=True)
-label = datetime.strptime(monthly[0][:7], '%Y-%m').strftime('%B %Y') if monthly else datetime.now().strftime('%B %Y')
-print(label)
-" 2>/dev/null || date '+%B %Y')
-
-# Update the date in the QA system prompt (two patterns: script and index.html inline)
-sed -i "s/indicators as at [A-Za-z]* [0-9]\{4\}/indicators as at ${PERIOD_LABEL}/g" "$REPO_DIR/index.html"
-# Also update the Dataset(...) label passed to the model
-sed -i "s/Dataset ([A-Za-z]* [0-9]\{4\})/Dataset (${PERIOD_LABEL})/g" "$REPO_DIR/index.html"
-
-echo "   Cache-buster: $TS | QA date: $PERIOD_LABEL"
+# The QA prompt reads indicator-specific periods from indicator-lookup.js;
+# never imply all indicators share the newest reference date.
+echo "   Cache-buster: $TS"
 
 # ── 7. Validate ───────────────────────────────────────────────────────
 echo ""
@@ -176,12 +145,12 @@ git add data.js index.html indicator-lookup.js sa2_kpi_wide.csv \
         inputs/Output-Trends.csv \
         "inputs/Output  - Time-series Trends.xlsx" \
         reports/central-coast.md \
-        reports/central-coast.docx 2>/dev/null || true
+        reports/central-coast.docx reports/central-coast.pdf \
+        scripts/generate_verified_report.py scripts/refresh_from_dropbox.sh
 
-git add inputs/Output-Mapped-SA2-Level-Data-Pivot-All-LGAs-Prior-Month.xlsx 2>/dev/null || true
-
-# Stage clusters if it exists
-git add public/data/clusters.json 2>/dev/null || true
+# Clusters are mandatory: fail rather than publishing old analytics.
+test -s public/data/clusters.json
+git add public/data/clusters.json
 
 if git diff --cached --quiet; then
   echo "   No changes detected -- dashboard is already up to date."
@@ -197,10 +166,9 @@ print(label)
 " 2>/dev/null || echo "unknown")
 
   git commit -m "chore: full dashboard refresh ($PERIOD) — data, analytics, intelligence report, QA"
-  git push origin main
-  git push dev main:gh-pages
+  git push dev HEAD:gh-pages
   echo ""
-  echo "   Pushed to origin/main and dev/gh-pages."
+  echo "   Pushed only to dev/gh-pages; origin/main may carry unrelated changes."
   echo "   GitHub Pages will rebuild in ~1-2 minutes."
 fi
 
@@ -209,15 +177,4 @@ echo "========================================="
 echo " Refresh complete!"
 echo "========================================="
 
-# ── Auto-schedule Buffer posts ────────────────────────────────────────────────
-echo ""
-echo "→ Scheduling Council data posts to Buffer (X + LinkedIn)..."
-source /etc/clawdbot/clawdbot.env
-cd /home/azureuser/council-work
-python3 social_posts_from_emails.py \
-  --since "$(date -d '45 days ago' +%Y-%m-%d)" \
-  --schedule-mwf "$(date -d 'next Monday' +%Y-%m-%d)" \
-  --schedule-time 09:00 \
-  --schedule-tz Australia/Sydney \
-  && echo "   ✅ Buffer posts scheduled — review at https://publish.buffer.com" \
-  || echo "   ❌ Buffer scheduling failed — run social_posts_from_emails.py manually"
+# Social posts are intentionally outside the dashboard refresh scope.

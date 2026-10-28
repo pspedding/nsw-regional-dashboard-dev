@@ -459,8 +459,8 @@
   </div>
 </div>
 
-<script src="indicator-lookup.js?v=1786693211"></script>
-<script src="data.js?v=1786693211"></script>
+<script src="indicator-lookup.js?v=1793155600"></script>
+<script src="data.js?v=1793155600"></script>
 <script>
 // ── CONFIG ──────────────────────────────────────────────────────────
 const INDICATOR_LABELS = {
@@ -995,13 +995,15 @@ async function sendQA() {
     return out;
   });
 
+  const periods = Object.fromEntries(KEY_COLS.map(k => [k, INDICATOR_LOOKUP[k]?.latestPeriod || (k === 'Population Change 2023-24' ? INDICATOR_LOOKUP['ERP Change 2023-24']?.latestPeriod : null)]));
+  const latestPeriod = Object.values(periods).filter(Boolean).sort().at(-1) || 'not specified';
   const systemMsg = `You are a regional economics analyst for Central Coast Council (NSW). ` +
-    `The dataset below contains CURRENT data for ${scopeName} SA2 suburbs, with indicators as at July 2026. ` +
-    `This is real, live data — do NOT say it is outdated or refer to any other time period. ` +
+    `The dataset below contains SA2 indicators for ${scopeName}, with reference periods varying by indicator (latest available: ${latestPeriod}; consult indicator metadata). ` +
+    `State the indicator-specific reference period when available; never describe all fields as current or suppress older periods. ` +
     `You MUST answer using ONLY the numbers in the dataset below. Do NOT use any outside knowledge. ` +
     `Do NOT guess. If the answer is not in the dataset, say "The dataset does not contain that information." ` +
     `Be concise (2–4 sentences). Use specific suburb names and exact numbers from the data. ` +
-    `Dataset (July 2026):\n${JSON.stringify(rows)}`;
+    `Indicator reference periods: ${JSON.stringify(periods)}\nDataset (mixed reference periods; latest available ${latestPeriod}):\n${JSON.stringify(rows)}`;
 
   try {
     const resp = await fetch(qaEndpoint, {
